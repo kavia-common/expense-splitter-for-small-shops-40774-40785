@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
-"""Initialize SQLite database for expense_database"""
+"""Initialize SQLite database for expense_database with expense-specific schema.
+
+This script:
+- Ensures the database exists and is accessible
+- Enables PRAGMA foreign_keys
+- Creates demo tables (app_info, users) if not present
+- Creates expense tables:
+    members, expenses, expense_participants
+- Adds indexes on expenses(payer_id), expense_participants(expense_id), expense_participants(member_id)
+- Creates or replaces balances_view(member_id, name, net_cents) where:
+    net_cents = credits (sum of expenses.amount_cents paid by member)
+               - debits (sum of expense_participants.share_cents for member)
+- Is idempotent and safe to re-run without dropping existing demo tables.
+"""
 
 import sqlite3
 import os
+from contextlib import closing
 
 DB_NAME = "myapp.db"
 DB_USER = "kaviasqlite"  # Not used for SQLite, but kept for consistency
@@ -17,59 +31,119 @@ if db_exists:
     print(f"SQLite database already exists at {DB_NAME}")
     # Verify it's accessible
     try:
-        conn = sqlite3.connect(DB_NAME)
-        conn.execute("SELECT 1")
-        conn.close()
+        with closing(sqlite3.connect(DB_NAME)) as _tmp_conn:
+            _tmp_conn.execute("SELECT 1")
         print("Database is accessible and working.")
     except Exception as e:
         print(f"Warning: Database exists but may be corrupted: {e}")
 else:
     print("Creating new SQLite database...")
 
-# Create database with sample tables
-conn = sqlite3.connect(DB_NAME)
-cursor = conn.cursor()
+# Connect and initialize schema
+with closing(sqlite3.connect(DB_NAME)) as conn:
+    cursor = conn.cursor()
 
-# Create initial schema
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS app_info (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        key TEXT UNIQUE NOT NULL,
-        value TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-""")
+    # Ensure foreign keys are enabled
+    cursor.execute("PRAGMA foreign_keys = ON")
 
-# Create a sample users table as an example
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-""")
+    # Keep existing demo tables
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_info (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT UNIQUE NOT NULL,
+            value TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
-# Insert initial data
-cursor.execute("INSERT OR REPLACE INTO app_info (key, value) VALUES (?, ?)", 
-               ("project_name", "expense_database"))
-cursor.execute("INSERT OR REPLACE INTO app_info (key, value) VALUES (?, ?)", 
-               ("version", "0.1.0"))
-cursor.execute("INSERT OR REPLACE INTO app_info (key, value) VALUES (?, ?)", 
-               ("author", "John Doe"))
-cursor.execute("INSERT OR REPLACE INTO app_info (key, value) VALUES (?, ?)", 
-               ("description", ""))
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
-conn.commit()
+    # Insert/Upsert initial app_info data
+    cursor.execute("INSERT OR REPLACE INTO app_info (key, value) VALUES (?, ?)", ("project_name", "expense_database"))
+    cursor.execute("INSERT OR REPLACE INTO app_info (key, value) VALUES (?, ?)", ("version", "0.1.0"))
+    cursor.execute("INSERT OR REPLACE INTO app_info (key, value) VALUES (?, ?)", ("author", "John Doe"))
+    cursor.execute("INSERT OR REPLACE INTO app_info (key, value) VALUES (?, ?)", ("description", ""))
 
-# Get database statistics
-cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-table_count = cursor.fetchone()[0]
+    # Expense-specific schema
+    # 1) members
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
-cursor.execute("SELECT COUNT(*) FROM app_info")
-record_count = cursor.fetchone()[0]
+    # 2) expenses
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            description TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+            payer_id INTEGER NOT NULL REFERENCES members(id) ON DELETE RESTRICT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
-conn.close()
+    # 3) expense_participants
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS expense_participants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            expense_id INTEGER NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+            member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE RESTRICT,
+            share_cents INTEGER NOT NULL CHECK(share_cents >= 0),
+            UNIQUE(expense_id, member_id)
+        )
+    """)
+
+    # Indexes (CREATE IF NOT EXISTS supported in SQLite 3.8.0+)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_expenses_payer_id ON expenses(payer_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_exp_part_expense_id ON expense_participants(expense_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_exp_part_member_id ON expense_participants(member_id)")
+
+    # Balances view: compute credits and debits per member, net = credits - debits
+    # Use CREATE VIEW and drop existing if present to emulate create or replace behavior idempotently
+    cursor.execute("DROP VIEW IF EXISTS balances_view")
+    cursor.execute("""
+        CREATE VIEW balances_view AS
+        WITH
+        credits AS (
+            SELECT m.id AS member_id, IFNULL(SUM(e.amount_cents), 0) AS credits_cents
+            FROM members m
+            LEFT JOIN expenses e ON e.payer_id = m.id
+            GROUP BY m.id
+        ),
+        debits AS (
+            SELECT m.id AS member_id, IFNULL(SUM(ep.share_cents), 0) AS debits_cents
+            FROM members m
+            LEFT JOIN expense_participants ep ON ep.member_id = m.id
+            GROUP BY m.id
+        )
+        SELECT
+            m.id AS member_id,
+            m.name AS name,
+            CAST(IFNULL(c.credits_cents, 0) - IFNULL(d.debits_cents, 0) AS INTEGER) AS net_cents
+        FROM members m
+        LEFT JOIN credits c ON c.member_id = m.id
+        LEFT JOIN debits d ON d.member_id = m.id
+    """)
+
+    # Commit all schema changes
+    conn.commit()
+
+    # Gather statistics for output
+    cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    table_count = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM app_info")
+    record_count = cursor.fetchone()[0]
 
 # Save connection information to a file
 current_dir = os.getcwd()
@@ -125,7 +199,8 @@ try:
         print("")
         print("SQLite CLI is available. You can also use:")
         print(f"  sqlite3 {DB_NAME}")
-except:
+except Exception:
+    # Avoid crashing on environments without sqlite3 client
     pass
 
 # Exit successfully
