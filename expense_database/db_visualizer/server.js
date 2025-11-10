@@ -326,8 +326,18 @@ app.get('/api/:db/tables/:table/data', (req, res) =>
   })
 );
 
+// Readiness/Liveness endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  // Serve index if present; otherwise return a simple message for readiness.
+  const indexPath = path.join(__dirname, 'public', 'index.html');
+  if (fs.existsSync(indexPath)) {
+    return res.sendFile(indexPath);
+  }
+  return res.status(200).send('Database viewer is running');
 });
 
 // Environment info
@@ -338,9 +348,12 @@ const envInfo = {
   MongoDB: 'MONGODB_URL, MONGODB_DB'
 };
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Database viewer running on http://localhost:${PORT}`);
+// Ensure server binds to designated port (default 3020 for this container) and all interfaces
+const PORT = parseInt(process.env.PORT, 10) || 3020;
+const HOST = process.env.HOST || '0.0.0.0';
+
+app.listen(PORT, HOST, () => {
+  console.log(`Database viewer running on http://${HOST}:${PORT}`);
   console.log('\nEnvironment variables expected:');
   Object.entries(envInfo).forEach(([db, vars]) => {
     console.log(`${db}: ${vars}`);
