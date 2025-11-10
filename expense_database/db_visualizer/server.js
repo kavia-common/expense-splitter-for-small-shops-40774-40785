@@ -1,3 +1,8 @@
+/**
+ * Optional DB Visualizer - local-only
+ * This server is NOT started by the expense_database container and is not required for health checks.
+ * Run manually with: npm install && npm run start (from the db_visualizer directory)
+ */
 const express = require('express');
 const path = require('path');
 const fs = require('fs');

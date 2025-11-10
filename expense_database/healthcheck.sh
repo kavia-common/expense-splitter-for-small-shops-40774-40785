@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Lightweight healthcheck for SQLite-based expense_database container.
 # This script avoids any TCP port checks and validates the database file and connectivity.
+# Note: Do NOT attempt to start or depend on any Node/Express server (e.g., port 3020) here.
 
 set -euo pipefail
 

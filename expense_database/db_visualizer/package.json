@@ -1,7 +1,7 @@
 {
   "name": "simple-db-viewer",
   "version": "1.0.0",
-  "description": "Simple database viewer for PostgreSQL, MySQL, SQLite, and MongoDB",
+  "description": "Simple database viewer for PostgreSQL, MySQL, SQLite, and MongoDB (optional, local-only; container does not run this)",
   "main": "server.js",
   "scripts": {
     "start": "PORT=3020 HOST=0.0.0.0 node server.js",
