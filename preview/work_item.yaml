@@ -33,15 +33,19 @@ containers:
       - REACT_APP_FEATURE_FLAGS
       - REACT_APP_EXPERIMENTS_ENABLED
     buildCommand: ""
+    # Start only the DB initializer; do NOT run db_visualizer or bind any port
     startCommand: "python init_db.py"
+    # Command-based healthcheck (no TCP/HTTP)
     healthcheck:
-      # Prefer script-based healthcheck
-      command: "bash expense_database/healthcheck.sh"
-      interval: "30s"
+      test:
+        - CMD
+        - bash
+        - expense_database/healthcheck.sh
+      interval: "10s"
       timeout: "5s"
-      retries: 3
-      # Fallback inline test if the preview runner only supports inline commands:
-      inlineFallback: "test -f expense_database/myapp.db && echo OK"
+      retries: 6
+      # Inline fallback for platforms that only accept inline commands
+      inlineFallback: 'sh -c "test -f expense_database/myapp.db && echo OK"'
     # Explicitly ensure there are no ports or readiness checks for this container
     ports: []
     readiness: none
