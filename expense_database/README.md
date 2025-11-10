@@ -11,6 +11,31 @@ Startup behavior
   - Runs test_db.py to verify SQLite connectivity
 - No Node/Express server is started by this container.
 
+Containerization guidance (no TCP port, file-based healthcheck)
+- Do not EXPOSE or depend on TCP port 3020 (or any TCP port) for this container.
+- Use a file-based healthcheck so the container reaches healthy without any port checks.
+- Example Dockerfile snippet:
+  FROM python:3.11-slim
+  WORKDIR /app
+  COPY . /app
+  RUN chmod +x healthcheck.sh init_db.py && \
+      python3 init_db.py
+  HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["bash","healthcheck.sh"]
+  CMD ["sleep","infinity"]
+
+- Example docker-compose snippet:
+  services:
+    expense_database:
+      build: ./expense_database
+      # Do NOT expose any port here; SQLite is file-based
+      healthcheck:
+        test: ["CMD","bash","healthcheck.sh"]
+        interval: 30s
+        timeout: 5s
+        retries: 3
+      volumes:
+        - ./expense_database:/app
+
 Optional: local DB visualizer
 - A local-only database viewer is available in db_visualizer/.
 - This is NOT part of the container startup and is not required for readiness.
@@ -23,3 +48,4 @@ Optional: local DB visualizer
 Notes
 - Avoid adding any step in Dockerfile or compose that starts server.js automatically.
 - The API service (3001) and frontend (3000) do not rely on any port from this container.
+- If you previously had healthchecks or readiness probes against port 3020, remove them and use the file-based healthcheck shown above.
